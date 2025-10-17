@@ -4,11 +4,15 @@
 # - Smart fallback: if Trends fails OR a Wikipedia title isn't exact, we auto-resolve by search
 # - Caching for speed
 # - Plain-English headline + a detailed layman narrative ("What these charts mean")
-# - Core charts + Performance Visuals Pack (counterfactual, excess, cumulative, event study, decay half-life, placebo check)
+# - Core charts + Performance Visuals (counterfactual, excess, cumulative, event study, decay half-life, placebo check) with captions
 # - Date comparison table (e.g., theatrical vs streaming vs YouTube)
 # - Interest-by-region (Trends)
 # - Batch mode (upload a CSV)
 # - Downloads: CSVs, ZIP bundle, PowerPoint
+#
+# Extra reliability:
+# - Safer cached_trends guard (no 'NoneType' rename errors)
+# - trends_pair(): fetch film+outcome in ONE Trends call when <=5 total terms; auto-widen timeframe/geo
 
 import io, time, zipfile, datetime as dt
 from typing import List
@@ -45,7 +49,7 @@ def fetch_trends_weekly(queries: List[str], geo: str, timeframe: str = "today 5-
         try:
             py.build_payload(queries, timeframe=timeframe, geo=geo)
             df = py.interest_over_time()
-            if df.empty:
+            if df is None or df.empty:
                 raise RuntimeError("Google Trends returned no data; try a different GEO or timeframe.")
             if "isPartial" in df.columns:
                 df = df.drop(columns=["isPartial"])
@@ -73,7 +77,6 @@ def wiki_weekly_pageviews(title_or_query: str, start: str, end: str, lang: str =
 
     session = requests.Session()
     session.headers.update({"User-Agent": "media-impacts-app/0.1 (contact: you@example.com)"})
-
 
     def _summary_exists(title: str) -> bool:
         r = session.get(f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{quote(title, safe='')}", timeout=15)
@@ -224,7 +227,11 @@ def make_ppt(film, outcome, intervention, figs, metrics) -> bytes:
 # --------------------------- Caching wrappers ---------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_trends(queries, geo, timeframe):
-    return fetch_trends_weekly(queries, geo=geo, timeframe=timeframe)
+    s = fetch_trends_weekly(queries, geo=geo, timeframe=timeframe)
+    # Guard against None or empty results so callers don’t .rename() a None
+    if s is None or not isinstance(s, pd.Series) or s.empty:
+        raise RuntimeError("No Google Trends data returned. Try a simpler term, different GEO, or switch to Wikipedia.")
+    return s
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_wiki(title, start, end, lang="en"):
@@ -233,6 +240,55 @@ def cached_wiki(title, start, end, lang="en"):
 @st.cache_data(ttl=1800, show_spinner=False)
 def cached_regions(query, geo, timeframe):
     return trends_interest_by_region(query, geo=geo, timeframe=timeframe)
+
+# --------------------------- Extra: combined Trends call ---------------------------
+def trends_pair(film_qs, outcome_qs, geo, timeframe):
+    """
+    Try to fetch film + outcome in ONE Trends request (<=5 total terms).
+    Auto-widen: try your settings -> 5y -> worldwide. Fallback to separate cached calls.
+    """
+    from pytrends.request import TrendReq
+
+    all_q = [q.strip() for q in (film_qs + outcome_qs) if q.strip()]
+    py = TrendReq(hl="en-US", tz=0, retries=0, backoff_factor=0,
+                  requests_args={"headers":{"User-Agent":"media-impacts-app/0.1"}})
+
+    def _one_call(geo_val, timeframe_val):
+        qs = all_q[:5]
+        py.build_payload(qs, timeframe=timeframe_val, geo=geo_val)
+        df = py.interest_over_time()
+        if df is None or df.empty:
+            return None, None
+        if "isPartial" in df.columns:
+            df = df.drop(columns=["isPartial"])
+        # Build series by averaging the columns matching each subset
+        fcols = [c for c in df.columns if c in film_qs]
+        ocols = [c for c in df.columns if c in outcome_qs]
+        if not fcols or not ocols:
+            return None, None
+        film_s = df[fcols].mean(axis=1).resample("W-MON").mean().rename("film_interest")
+        out_s  = df[ocols].mean(axis=1).resample("W-MON").mean().rename("outcome")
+        if film_s.empty or out_s.empty:
+            return None, None
+        return film_s, out_s
+
+    if len(all_q) <= 5:
+        # 1) As chosen
+        fs, os_ = _one_call(geo, timeframe)
+        if fs is not None: return fs, os_
+        # 2) Widen timeframe
+        if timeframe != "today 5-y":
+            fs, os_ = _one_call(geo, "today 5-y")
+            if fs is not None: return fs, os_
+        # 3) Try worldwide
+        if geo:
+            fs, os_ = _one_call("", "today 5-y")
+            if fs is not None: return fs, os_
+
+    # Fallback to separate calls (still cached/guarded)
+    fs = cached_trends(film_qs, geo, timeframe).rename("film_interest")
+    os_ = cached_trends(outcome_qs, geo, timeframe).rename("outcome")
+    return fs, os_
 
 # --------------------------- Sidebar inputs ---------------------------
 with st.sidebar:
@@ -289,8 +345,7 @@ if run:
                 film_qs = [q.strip() for q in film_input.split(",")]
                 outcome_qs = [q.strip() for q in outcome_input.split(",")]
                 try:
-                    film_s = cached_trends(film_qs, geo=geo, timeframe=timeframe).rename("film_interest")
-                    out_s  = cached_trends(outcome_qs, geo=geo, timeframe=timeframe).rename("outcome")
+                    film_s, out_s = trends_pair(film_qs, outcome_qs, geo, timeframe)
                 except Exception as e:
                     if auto_fallback:
                         st.warning(f"Google Trends failed ({e}). Falling back to Wikipedia pageviews.")
@@ -345,7 +400,6 @@ if run:
 
             peak_val = float(df["outcome"].max())
             peak_when = df["outcome"].idxmax().date()
-            pre_mean = metrics["pre_mean"]
             level_pct = metrics["level_change_pct_of_pre"]
 
             # Half-life (best-effort)
@@ -442,15 +496,17 @@ if run:
             return make_ppt(film_input, outcome_input, intervention, figs, metrics)
         st.download_button("⬇️ Download PowerPoint (.pptx)", _make_ppt(), file_name="its_report.pptx")
 
-        # ---- Performance Visuals Pack ----
+        # ---- Performance Visuals Pack (with friendly descriptions) ----
         st.subheader("Performance visuals")
-        # Rebuild design matrices
+
+        # Rebuild design matrices for predictions
         design = sm.add_constant(df[["time","post","time_post","film_lag1"]])
         pred    = model.predict(design)
         design_cf = design.copy()
         design_cf["post"] = 0
         design_cf["time_post"] = 0
-        pred_cf = model.predict(design_cf)  # counterfactual
+        pred_cf = model.predict(design_cf)  # counterfactual (no intervention)
+
         after_mask = df.index >= metrics["t0_monday"]
         excess = (df["outcome"] - pred_cf).where(after_mask, 0.0)
 
@@ -462,6 +518,11 @@ if run:
         plt.axvline(metrics["t0_monday"], linestyle="--", label="Intervention")
         plt.title("Actual vs Counterfactual"); plt.legend(); plt.tight_layout()
         st.pyplot(fig)
+        st.caption(
+            "This compares what happened (blue) to a modelled ‘no-release’ world (orange). "
+            "The shaded area after the dashed line is the **extra attention** attributed to the release window. "
+            "Bigger shaded area ⇒ stronger overall impact."
+        )
 
         # 2) Weekly excess bars
         fig = plt.figure(figsize=(10,3))
@@ -469,6 +530,10 @@ if run:
         plt.axvline(metrics["t0_monday"], linestyle="--")
         plt.title("Weekly Excess vs Counterfactual"); plt.tight_layout()
         st.pyplot(fig)
+        st.caption(
+            "Each bar shows **how much above (or below) baseline** the outcome was that week after release. "
+            "Tall early bars usually mean a spike; negative bars mean weeks below the modelled baseline."
+        )
 
         # 3) Cumulative excess
         cum_excess = excess.cumsum()
@@ -477,6 +542,11 @@ if run:
         plt.axvline(metrics["t0_monday"], linestyle="--")
         plt.title("Cumulative Excess Interest"); plt.tight_layout()
         st.pyplot(fig)
+        st.caption(
+            "Running total of the extra attention vs the counterfactual. "
+            "A steep climb means impact is building fast; a flat line means the effect has faded. "
+            "The final value is the **total lift** over the period."
+        )
 
         # 4) Event-study (±26 weeks)
         weeks_from = ((df.index - metrics["t0_monday"]).days // 7).astype(int)
@@ -490,11 +560,16 @@ if run:
         plt.title("Event-time average (weeks relative to intervention)")
         plt.xlabel("Weeks from intervention"); plt.tight_layout()
         st.pyplot(fig)
+        st.caption(
+            "Zoomed view centred on release week (0). "
+            "Left side shows the **lead-up** pattern; right side shows the **after-effect** week by week."
+        )
 
-        # 5) Decay fit & half-life
+        # 5) Decay fit & half-life (best-effort)
         from scipy.optimize import curve_fit
         def _exp_decay(t, A, k, c):  # A*e^(-k t)+c
             return A * np.exp(-k * t) + c
+
         pos = after_mask & (excess > 0)
         if pos.sum() >= 6:
             y = excess[pos].values
@@ -509,8 +584,13 @@ if run:
                 plt.axvline(metrics["t0_monday"], linestyle="--")
                 plt.title("Excess decay after intervention"); plt.legend(); plt.tight_layout()
                 st.pyplot(fig)
+                st.caption(
+                    "How quickly the lift fades. The curve estimates a simple **exponential decay**. "
+                    "The **half-life** is roughly how many weeks it takes for the lift to drop by half."
+                )
             except Exception as _e:
                 st.info(f"Decay fit skipped: {_e}")
+                st.caption("We couldn’t fit a decay curve this time (not enough stable positive weeks).")
 
         # 6) Placebo check (random pre-dates vs observed effect)
         def _fit_at(date_monday):
@@ -537,6 +617,11 @@ if run:
                 plt.axvline(metrics["level_change"], color="red", linestyle="--", label="Observed level change")
                 plt.title("Placebo distribution (pre-period dates)"); plt.legend(); plt.tight_layout()
                 st.pyplot(fig)
+                st.caption(
+                    "Sanity check: the grey bars show ‘fake’ release dates picked in the **pre-period**. "
+                    "The red line is your real jump. If it’s far to the right of most bars, your effect is "
+                    "unlikely to be just random timing."
+                )
 
         # 7) Interest by region (Trends only)
         if show_regions and "Google" in data_source:
@@ -549,6 +634,10 @@ if run:
                 plt.barh(top["region"][::-1], top[qcol][::-1])
                 plt.title("Where interest is highest"); plt.tight_layout()
                 st.pyplot(fig)
+                st.caption(
+                    "Locations with the strongest search interest for the film (Google Trends). "
+                    "Useful for understanding **where** attention came from."
+                )
             except Exception as e:
                 st.info(f"Region breakdown unavailable: {e}")
 
