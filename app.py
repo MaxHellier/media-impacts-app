@@ -1,5 +1,5 @@
 # app.py — Media Impacts: Quick ITS (centered form, robust fetch, retry helpers)
-# UI: Project title + Date of release (centered). Advanced holds all other options.
+# UI: Minimal inputs (Project title + Date), clear Results wording, Advanced for options.
 # Includes safer Google Trends & Wikipedia fetchers, Retry/Switch buttons, charts, and downloads.
 
 import io, time, zipfile, datetime as dt
@@ -11,7 +11,7 @@ import statsmodels.api as sm
 import streamlit as st
 
 # --------------------------- Page setup & light CSS ---------------------------
-st.set_page_config(page_title="🎬 Media Impacts — Quick ITS", layout="wide")
+st.set_page_config(page_title="🎬 Media Impact Analyzer — Google Trends & Wikipedia", layout="wide")
 
 st.markdown(
     """
@@ -24,8 +24,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("Media Impact Analyzer: Google Trends & Wikipedia")
-st.caption("Fetches weekly public-interest signals from Google Trends and the Wikimedia Pageviews API for your project title and chosen outcome, then runs an Interrupted Time Series (level & slope change) at your release date.")
+st.title("🎬 Media Impact Analyzer — Google Trends & Wikipedia")
+st.caption(
+    "Fetches weekly public-interest signals from Google Trends and the Wikimedia Pageviews API for your project title "
+    "and chosen outcome, then runs an Interrupted Time Series (level & slope change) at your release date."
+)
 
 # =====================================================
 # Data fetchers (robust)
@@ -304,17 +307,16 @@ def trends_pair(film_qs, outcome_qs, geo, timeframe):
 with st.container():
     st.markdown('<div class="center-card">', unsafe_allow_html=True)
     with st.form("center_form"):
-    # Removed the subheader and added the example right in the label
-    film_input = st.text_input(
-        "Project title (e.g., Eating Our Way to Extinction)",
-        value="",  # leave blank so the example acts as guidance, not data
-        placeholder="Type a film/series title…",
-    )
-    intervention = st.date_input(
-        "Date of release",
-        value=dt.date(2021, 9, 30),
-        help="Approximate is OK. We align to Mondays internally."
-    )
+        # Removed subheader; added explicit example in label
+        film_input = st.text_input(
+            "Project title (e.g., Eating Our Way to Extinction)",
+            value="",
+            placeholder="Type a film/series title…",
+        )
+        intervention = st.date_input(
+            "Date of release",
+            value=dt.date(2021, 9, 30),
+            help="Approximate is OK. We align to Mondays internally."
         )
 
         with st.expander("Advanced options", expanded=False):
@@ -395,8 +397,8 @@ if run:
 
             if not use_wiki:
                 # Google Trends path (with robust pair call and auto fallback)
-                film_qs = [q.strip() for q in film_input.split(",")]
-                outcome_qs = [q.strip() for q in outcome_input.split(",")]
+                film_qs = [q.strip() for q in (film_input or "").split(",")]
+                outcome_qs = [q.strip() for q in (outcome_input or "").split(",")]
                 try:
                     film_s, out_s = trends_pair(film_qs, outcome_qs, geo, timeframe)
                 except Exception as e:
@@ -414,31 +416,72 @@ if run:
             # Model
             model, df, figs, metrics = quick_its(out_s, film_s, intervention.isoformat())
 
-            # Summary (plain English)
+            # ---------------- Results (clear wording) ----------------
+            st.subheader("Results")  # removed "(plain English)"
+
+            # Helper formatters
+            def _fmt_int(x):
+                try:
+                    if x is None or (isinstance(x, float) and np.isnan(x)): return "—"
+                    return f"{int(round(x)):,}"
+                except Exception:
+                    return str(x)
+
+            def _fmt_float(x, d=3):
+                try:
+                    if x is None or (isinstance(x, float) and np.isnan(x)): return "—"
+                    return f"{float(x):.{d}f}"
+                except Exception:
+                    return str(x)
+
             sig_level = 0.05
             p_post     = float(model.pvalues.get("post", 1.0))
             p_timepost = float(model.pvalues.get("time_post", 1.0))
-            flag = (lambda p: "✅" if p < sig_level else "⚠️")
 
-            st.subheader("Results (plain English)")
-            st.write(
-                f"{flag(p_post)} Around **{intervention}**, the outcome shifted by "
-                f"**{metrics['level_change']:.0f}** "
-                f"({metrics['level_change_pct_of_pre']:.1f}% of the pre-release average; "
-                f"95% CI {metrics['level_ci_lo']:.0f}…{metrics['level_ci_hi']:.0f})."
+            pre_avg = metrics.get("pre_mean", np.nan)
+            pct = np.nan
+            if pre_avg not in (None, 0) and not (isinstance(pre_avg, float) and np.isnan(pre_avg)):
+                try:
+                    pct = 100.0 * metrics["level_change"] / pre_avg
+                except Exception:
+                    pct = np.nan
+
+            level_line = (
+                f"- **Immediate lift at release:** {_fmt_int(metrics['level_change'])} "
+                f"(95% CI {_fmt_int(metrics['level_ci_lo'])} to {_fmt_int(metrics['level_ci_hi'])}). "
+                f"{'This change is statistically significant.' if p_post < sig_level else 'This change is not statistically significant.'}"
             )
-            st.write(
-                f"{flag(p_timepost)} After that date, the weekly trend changed by "
-                f"**{metrics['slope_change_per_week']:.3f}** per week "
-                f"(95% CI {metrics['slope_ci_lo']:.3f}…{metrics['slope_ci_hi']:.3f})."
+
+            if np.isnan(pct):
+                context_line = "- **Context:** We couldn’t compute a % of the pre-release average (too little or no pre-release data)."
+            else:
+                context_line = f"- **Context:** about **{_fmt_float(pct, 1)}%** of a typical pre-release week."
+
+            slope_val = metrics["slope_change_per_week"]
+            slope_dir = "increased" if slope_val > 0 else "decreased" if slope_val < 0 else "did not change"
+            slope_line = (
+                f"- **After release, the weekly trend {slope_dir} by** {_fmt_float(slope_val, 3)} per week "
+                f"(95% CI {_fmt_float(metrics['slope_ci_lo'], 3)} to {_fmt_float(metrics['slope_ci_hi'], 3)}). "
+                f"{'Significant.' if p_timepost < sig_level else 'Not significant.'}"
             )
-            st.caption("Green check = statistically significant at p<0.05; warning = not significant.")
+
+            st.markdown(
+                f"""
+**At the release week ({intervention}):**  
+{level_line}  
+{context_line}
+
+**After the release:**  
+{slope_line}
+"""
+            )
+            st.caption("Notes: “Significant” means p<0.05. Positive numbers = more attention; negative = less.")
 
             # Core charts
             st.pyplot(figs[0]); st.pyplot(figs[1])
 
-            # Narrative explainer (dynamic, now safely *inside* success path)
-            from scipy.optimize import curve_fit  # imported here to avoid global dependency if unused
+            # Narrative explainer
+            from scipy.optimize import curve_fit
             with st.expander("What these charts mean (plain language)", expanded=True):
                 design = sm.add_constant(df[["time","post","time_post","film_lag1"]])
                 pred    = model.predict(design)
@@ -467,8 +510,8 @@ if run:
                 if ("Wikipedia" not in data_source) and not st.session_state.get("force_wiki", False):
                     # Optional region snippet (Trends only)
                     try:
-                        reg = cached_regions(film_input.split(",")[0].strip(), geo=geo, timeframe=timeframe)
-                        qcol = film_input.split(",")[0].strip()
+                        reg = cached_regions((film_input or "").split(",")[0].strip(), geo=geo, timeframe=timeframe)
+                        qcol = (film_input or "").split(",")[0].strip()
                         top3 = reg.sort_values(qcol, ascending=False).head(3)["region"].tolist()
                         if top3: regions_text = f" Top regions: {', '.join(top3)}."
                     except Exception:
@@ -477,11 +520,11 @@ if run:
                 sig = lambda p: "statistically significant" if p < 0.05 else "not statistically significant"
                 readable = (
                     f"**Headline** — Around **{intervention}**, attention to **{outcome_input}** changed.\n\n"
-                    f"**Immediate jump:** **{metrics['level_change']:.0f}** "
-                    f"({metrics['level_change_pct_of_pre']:.1f}% of pre), {sig(p_post)}.\n"
-                    f"**Trend change:** **{metrics['slope_change_per_week']:.3f}**/week, {sig(p_timepost)}.\n"
-                    f"**Cumulative lift:** ~**{cum_excess:,.0f}** units over **{weeks_positive}** weeks.\n"
-                    f"**Peak:** **{peak_val:,.0f}** on **{peak_when}**. **Half-life:** {half_life_text}.\n"
+                    f"**Immediate jump:** {_fmt_int(metrics['level_change'])} "
+                    f"({('%.1f' % (pct))+'%' if not np.isnan(pct) else 'n/a'} of pre), {sig(p_post)}.\n"
+                    f"**Trend change:** {_fmt_float(metrics['slope_change_per_week'], 3)}/week, {sig(p_timepost)}.\n"
+                    f"**Cumulative lift:** ~{_fmt_int(cum_excess)} units over {weeks_positive} weeks.\n"
+                    f"**Peak:** {_fmt_int(peak_val)} on {peak_when}. **Half-life:** {half_life_text}.\n"
                     f"**Source:** {'Google Trends' if (('Wikipedia' not in data_source) and not st.session_state.get('force_wiki', False)) else 'Wikipedia pageviews'}."
                     f"{regions_text}\n"
                     f"*Correlations only; other events may also drive interest.*"
@@ -620,8 +663,8 @@ if run:
             if ("Wikipedia" not in data_source) and not st.session_state.get("force_wiki", False) and show_regions:
                 try:
                     st.subheader("Interest by region (Top 15)")
-                    reg = cached_regions(film_input.split(",")[0].strip(), geo=geo, timeframe=timeframe)
-                    qcol = film_input.split(",")[0].strip()
+                    reg = cached_regions((film_input or "").split(",")[0].strip(), geo=geo, timeframe=timeframe)
+                    qcol = (film_input or "").split(",")[0].strip()
                     top = reg.sort_values(qcol, ascending=False).head(15)
                     fig = plt.figure(figsize=(10,5))
                     plt.barh(top["region"][::-1], top[qcol][::-1])
