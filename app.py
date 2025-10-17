@@ -436,7 +436,8 @@ if run:
             # Core charts
             st.pyplot(figs[0]); st.pyplot(figs[1])
 
-            # Narrative explainer
+            # Narrative explainer (dynamic, now safely *inside* success path)
+            from scipy.optimize import curve_fit  # imported here to avoid global dependency if unused
             with st.expander("What these charts mean (plain language)", expanded=True):
                 design = sm.add_constant(df[["time","post","time_post","film_lag1"]])
                 pred    = model.predict(design)
@@ -451,7 +452,6 @@ if run:
                 # Half-life (best-effort)
                 half_life_text = "n/a"
                 try:
-                    from scipy.optimize import curve_fit
                     def _exp_decay(t, A, k, c): return A*np.exp(-k*t) + c
                     pos = after & (excess > 0)
                     if pos.sum() >= 6:
