@@ -24,8 +24,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("🎬 Media Impacts — Quick ITS")
-st.caption("Type a project title and choose a release date. Click **Run analysis** to see plain-English results, charts, and downloads.")
+st.title("🎬 Media Impact Analyzer — Google Trends & Wikipedia")
+st.caption("Fetches weekly public-interest signals from Google Trends and the Wikimedia Pageviews API for your project title and chosen outcome, then runs an Interrupted Time Series (level & slope change) at your release date.")
 
 # =====================================================
 # Data fetchers (robust)
