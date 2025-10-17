@@ -24,7 +24,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("🎬 Media Impact Analyzer — Google Trends & Wikipedia")
+st.title("Media Impact Analyzer: Google Trends & Wikipedia")
 st.caption("Fetches weekly public-interest signals from Google Trends and the Wikimedia Pageviews API for your project title and chosen outcome, then runs an Interrupted Time Series (level & slope change) at your release date.")
 
 # =====================================================
