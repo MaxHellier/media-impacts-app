@@ -1,0 +1,9 @@
+streamlit
+pytrends
+pandas==1.5.3
+numpy==1.23.5
+scipy==1.10.1
+statsmodels==0.14.2
+matplotlib==3.8.4
+requests
+python-pptx
