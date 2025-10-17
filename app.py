@@ -209,10 +209,11 @@ def cached_wiki(title, start, end, lang="en"):
 def cached_regions(query, geo, timeframe):
     return trends_interest_by_region(query, geo=geo, timeframe=timeframe)
 
-# =========================== Combined Trends call ===========================
+# =========================== Combined Trends call (FIXED SYNTAX) ===========================
 def trends_pair(film_qs, outcome_qs, geo, timeframe):
     """Try film+outcome in one Trends request (≤5 total). Auto-widen timeframe/worldwide; fallback to separate calls."""
     from pytrends.request import TrendReq
+
     all_q = [q.strip() for q in (film_qs + outcome_qs) if q.strip()]
     py = TrendReq(hl="en-US", tz=0, retries=0, backoff_factor=0,
                   requests_args={"headers":{"User-Agent":"media-impacts-app/0.1"}})
@@ -221,23 +222,39 @@ def trends_pair(film_qs, outcome_qs, geo, timeframe):
         qs = all_q[:5]
         py.build_payload(qs, timeframe=timeframe_val, geo=geo_val)
         df = py.interest_over_time()
-        if df is None or df.empty: return None, None
-        if "isPartial" in df.columns: df = df.drop(columns=["isPartial"])
+        if df is None or df.empty:
+            return None, None
+        if "isPartial" in df.columns:
+            df = df.drop(columns=["isPartial"])
         fcols = [c for c in df.columns if c in film_qs]
         ocols = [c for c in df.columns if c in outcome_qs]
-        if not fcols or not ocols: return None, None
+        if not fcols or not ocols:
+            return None, None
         film_s = df[fcols].mean(axis=1).resample("W-MON").mean().rename("film_interest")
         out_s  = df[ocols].mean(axis=1).resample("W-MON").mean().rename("outcome")
-        if film_s.empty or out_s.empty: return None, None
+        if film_s.empty or out_s.empty:
+            return None, None
         return film_s, out_s
 
     if len(all_q) <= 5:
+        # 1) As chosen
         fs, os_ = _one_call(geo, timeframe)
-        if fs is not None: return fs, os_
+        if fs is not None:
+            return fs, os_
+
+        # 2) Widen timeframe
         if timeframe != "today 5-y":
-            fs, os_ = _one_call(geo, "today 5-y");  if fs is not None: return fs, os_
+            fs, os_ = _one_call(geo, "today 5-y")
+            if fs is not None:
+                return fs, os_
+
+        # 3) Try worldwide
         if geo:
-            fs, os_ = _one_call("", "today 5-y");   if fs is not None: return fs, os_
+            fs, os_ = _one_call("", "today 5-y")
+            if fs is not None:
+                return fs, os_
+
+    # Fallback to separate calls (still cached/guarded)
     fs = cached_trends(film_qs, geo, timeframe).rename("film_interest")
     os_ = cached_trends(outcome_qs, geo, timeframe).rename("outcome")
     return fs, os_
