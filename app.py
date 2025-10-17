@@ -301,6 +301,83 @@ if run:
 
         # ---- Core charts ----
         st.pyplot(figs[0]); st.pyplot(figs[1])
+      # ---- Layman-friendly narrative ("What the charts mean") ----
+with st.expander("What these charts mean (plain language)", expanded=True):
+    # Rebuild predictions so we can compute counterfactual + excess (same as in visuals pack)
+    design = sm.add_constant(df[["time","post","time_post","film_lag1"]])
+    pred    = model.predict(design)
+    design_cf = design.copy()
+    design_cf["post"] = 0
+    design_cf["time_post"] = 0
+    pred_cf = model.predict(design_cf)  # counterfactual (no jump, no slope change)
+
+    after = df.index >= metrics["t0_monday"]
+    excess = (df["outcome"] - pred_cf).where(after, 0.0)
+    cum_excess = float(excess.cumsum().iloc[-1])
+    weeks_positive = int((excess > 0).sum())
+
+    # Peak and baseline
+    peak_val = float(df["outcome"].max())
+    peak_when = df["outcome"].idxmax().date()
+    pre_mean = metrics["pre_mean"]
+    level_pct = metrics["level_change_pct_of_pre"]
+
+    # Try to estimate a simple decay half-life (only if we have enough positive excess)
+    half_life_text = "n/a"
+    try:
+        from scipy.optimize import curve_fit
+        def _exp_decay(t, A, k, c): return A*np.exp(-k*t) + c
+        pos = after & (excess > 0)
+        if pos.sum() >= 6:
+            y = excess[pos].values
+            t = np.arange(len(y))
+            (A, k, c), _ = curve_fit(_exp_decay, t, y, p0=[max(y), 0.1, 0.0], maxfev=20000)
+            hl = (np.log(2)/k) if k > 0 else np.nan
+            if np.isfinite(hl):
+                half_life_text = f"{hl:.1f} weeks"
+    except Exception:
+        pass
+
+    # Optional: top regions if you're using Google Trends and toggled 'Show interest by region'
+    regions_text = ""
+    if show_regions and "Google" in data_source:
+        try:
+            reg = cached_regions(film_input.split(",")[0].strip(), geo=geo, timeframe=timeframe)
+            qcol = film_input.split(",")[0].strip()
+            top3 = reg.sort_values(qcol, ascending=False).head(3)["region"].tolist()
+            if top3:
+                regions_text = f" Top regions: {', '.join(top3)}."
+        except Exception:
+            pass
+
+    # Build the narrative
+    p_post     = float(model.pvalues.get("post", 1.0))
+    p_timepost = float(model.pvalues.get("time_post", 1.0))
+    sig = lambda p: "statistically significant" if p < 0.05 else "not statistically significant"
+
+    readable = (
+        f"**Headline** — Around **{intervention}**, attention to **{outcome_input}** changed.\n\n"
+        f"**What the first chart shows:** The solid blue line is weekly interest in *{outcome_input}*. "
+        f"The dashed vertical line marks the release window you chose. The orange line is the model’s fitted "
+        f"path, letting us estimate a jump at the date and whether the slope changed afterward.\n\n"
+        f"**Immediate jump:** The model estimates an instant change of **{metrics['level_change']:.0f}** "
+        f"({level_pct:.1f}% of the pre-release average), {sig(p_post)}.\n\n"
+        f"**Change in trend:** After the date, the average week-to-week change is **{metrics['slope_change_per_week']:.3f}** "
+        f"per week, {sig(p_timepost)}.\n\n"
+        f"**Counterfactual comparison:** Using the model’s “no-release” path as a baseline, the film generated a "
+        f"total **cumulative excess** of about **{cum_excess:,.0f}** units of attention, spread over **{weeks_positive} weeks**.\n\n"
+        f"**Peak popularity:** The highest observed week reached **{peak_val:,.0f}** on **{peak_when}**.\n\n"
+        f"**Decay speed:** From the excess pattern, the rough **half-life** of the post-release bump is **{half_life_text}** "
+        f"(how long it takes for the lift to fall by half). \n\n"
+        f"**Film interest chart:** The second chart shows weekly interest in the film itself, which often peaks near "
+        f"release and then fades.\n\n"
+        f"**Data source:** {'Google Trends (0–100 index)' if 'Google' in data_source else 'Wikipedia pageviews (raw counts)'}."
+        f"{regions_text}"
+        "\n\n*Notes:* results are correlational; interest can be influenced by other events (news cycles, marketing, platform placement, etc.)."
+    )
+
+    st.markdown(readable)
+    st.download_button("⬇️ Download summary (.txt)", readable.encode("utf-8"), file_name="readable_summary.txt")
 
         # ---- Coeff table ----
         coef = (model.params.to_frame("coef")
