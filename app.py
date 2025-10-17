@@ -1,18 +1,10 @@
-# app.py — Media Impacts: Quick ITS (all-in-one web app)
-# Features:
-# - Data sources: Google Trends (0–100 index) or Wikipedia pageviews (counts)
-# - Smart fallback: if Trends fails OR a Wikipedia title isn't exact, we auto-resolve by search
-# - Caching for speed
-# - Plain-English headline + a detailed layman narrative ("What these charts mean")
-# - Core charts + Performance Visuals (counterfactual, excess, cumulative, event study, decay half-life, placebo check) with captions
-# - Date comparison table (e.g., theatrical vs streaming vs YouTube)
-# - Interest-by-region (Trends)
-# - Batch mode (upload a CSV)
-# - Downloads: CSVs, ZIP bundle, PowerPoint
-#
-# Extra reliability:
-# - Safer cached_trends guard (no 'NoneType' rename errors)
-# - trends_pair(): fetch film+outcome in ONE Trends call when <=5 total terms; auto-widen timeframe/geo
+# app.py — Media Impacts: Quick ITS (simplified UI)
+# - Clear sidebar labels & guided inputs
+# - Sources: Wikipedia (recommended) or Google Trends
+# - Smart fallback + combined Trends call (≤5 terms)
+# - Plain-English summary + captions under visuals
+# - Downloads: CSV / ZIP / PPTX
+# - Date comparison & Batch mode
 
 import io, time, zipfile, datetime as dt
 from typing import List
@@ -22,10 +14,9 @@ import matplotlib.pyplot as plt
 import statsmodels.api as sm
 import streamlit as st
 
-# --------------------------- UI basics ---------------------------
-st.set_page_config(page_title="🎬 Media Impacts — Quick ITS", layout="centered")
+st.set_page_config(page_title="🎬 Media Impacts — Quick ITS", layout="wide")
 st.title("🎬 Media Impacts — Quick ITS")
-st.caption("Enter a film and outcome, pick a date, press **Run analysis**. View results, compare dates, and download a report.")
+st.caption("Enter a project title and an outcome to measure, select a release date, then run the analysis. Get charts, plain-language results, and downloadable files.")
 
 # --------------------------- Data fetchers ---------------------------
 def fetch_trends_weekly(queries: List[str], geo: str, timeframe: str = "today 5-y",
@@ -290,57 +281,88 @@ def trends_pair(film_qs, outcome_qs, geo, timeframe):
     os_ = cached_trends(outcome_qs, geo, timeframe).rename("outcome")
     return fs, os_
 
-# --------------------------- Sidebar inputs ---------------------------
+# =========================== UI: Sidebar ===========================
 with st.sidebar:
-    st.header("Inputs")
+    st.header("Start here")
 
-    # Default to Wikipedia on embedded/public pages to avoid rate limits
-    data_source = st.radio(
-        "Data source",
-        ["Google Trends (index 0–100)", "Wikipedia pageviews (counts)"],
-        help="Trends can rate-limit; Wikipedia is instant.",
-        index=1
+    # 1) Where to measure attention
+    data_source = st.selectbox(
+        "Measurement source",
+        ["Wikipedia pageviews (recommended)", "Google Trends (index 0–100)"],
+        index=0,
+        help="Wikipedia is stable for public use. Google Trends can rate-limit but shows relative interest."
     )
-    auto_fallback = st.checkbox("Auto-fallback to Wikipedia if Trends fails", value=True)
+    auto_fallback = st.checkbox(
+        "If Google Trends fails, automatically use Wikipedia",
+        value=True
+    )
 
+    # 2) What are we studying?
     film_input = st.text_input(
-        "Film (title or Trends terms)",
+        "Project title (film / short / series)",
         value="Eating Our Way to Extinction",
-        help="Trends: comma-separated variants (max 5). Wikipedia: any title or phrase; we'll auto-resolve."
+        placeholder="e.g., Don’t Look Up"
     )
+
     outcome_input = st.text_input(
-        "Outcome (Trends term or Wikipedia page)",
-        value="Plant-based diet" if "Wikipedia" in data_source else "plant-based food"
+        "Outcome topic (what do you want to measure?)",
+        value="Plant-based diet",
+        placeholder="e.g., vegan diet, meat consumption, climate change"
     )
 
-    col1, col2 = st.columns(2)
-    with col1:
-        geo = st.selectbox("Region (Trends)", ["", "US", "GB", "TH"], index=1, help="'' = worldwide")
-    with col2:
-        timeframe = st.selectbox("Timeframe (Trends)", ["today 5-y", "today 12-m", "today 3-m"], index=0)
+    # 3) When was it released?
+    intervention = st.date_input(
+        "Release window — choose the start date",
+        value=dt.date(2021, 9, 30),
+        help="Exact day isn’t critical. The model aligns dates to Mondays automatically."
+    )
 
-    intervention = st.date_input("Intervention date (release window)", dt.date(2021, 9, 30))
+    # 4) Advanced (optional)
+    with st.expander("Advanced options (optional)", expanded=False):
+        # --- Google Trends specific ---
+        if "Google Trends" in data_source:
+            st.caption("Google Trends settings")
+            colA, colB = st.columns(2)
+            with colA:
+                geo = st.selectbox("Region", ["", "US", "GB", "TH"], index=1, help="Blank = worldwide")
+            with colB:
+                timeframe = st.selectbox("Timeframe", ["today 5-y", "today 12-m", "today 3-m"], index=0)
+            show_regions = st.checkbox("Show interest by region map/table", value=False)
+        else:
+            # Defaults so the rest of the app works even if user never opens Advanced
+            geo = ""
+            timeframe = "today 5-y"
+            show_regions = False
 
-    st.markdown("---")
-    st.caption("Wikipedia-only options")
-    start_daily = st.text_input("Start YYYYMMDD", "20190101")
-    end_daily   = st.text_input("End YYYYMMDD",   dt.date.today().strftime("%Y%m%d"))
-    lang        = st.text_input("Wikipedia language code", "en")
+        # --- Wikipedia specific ---
+        st.caption("Wikipedia pageviews settings")
+        colC, colD, colE = st.columns(3)
+        with colC:
+            start_daily = st.text_input("Start (YYYYMMDD)", "20190101")
+        with colD:
+            end_daily = st.text_input("End (YYYYMMDD)", dt.date.today().strftime("%Y%m%d"))
+        with colE:
+            lang = st.text_input("Language code", "en")
 
-    st.markdown("---")
-    multi_dates = st.text_input("Compare dates (comma-separated)", "2021-09-30, 2022-07-01")
-    show_regions = st.checkbox("Show interest by region (Trends)", value=False)
+        # --- Extras ---
+        multi_dates = st.text_input(
+            "Compare several dates (comma-separated, optional)",
+            "2021-09-30, 2022-07-01",
+            help="Useful if you want to test theatrical vs streaming vs YouTube dates."
+        )
 
-    st.markdown("---")
-    st.caption("Batch mode CSV: film,outcome,intervention,source,geo")
-    batch_file = st.file_uploader("Upload batch CSV", type=["csv"])
+        st.markdown("---")
+        st.caption("Batch mode CSV: film,outcome,intervention,source,geo")
+        batch_file = st.file_uploader("Upload batch CSV (optional)", type=["csv"])
 
     run = st.button("▶️ Run analysis", use_container_width=True)
 
-# --------------------------- Main run ---------------------------
+# =========================== RIGHT: Results ===========================
+right = st.container()
+
 if run:
     try:
-        with st.spinner("Fetching series…"):
+        with right, st.spinner("Fetching data and running ITS…"):
             if "Google" in data_source:
                 film_qs = [q.strip() for q in film_input.split(",")]
                 outcome_qs = [q.strip() for q in outcome_input.split(",")]
@@ -357,342 +379,312 @@ if run:
                 film_s = cached_wiki(film_input, start_daily, end_daily, lang=lang).rename("film_interest")
                 out_s  = cached_wiki(outcome_input, start_daily, end_daily, lang=lang).rename("outcome")
 
-        with st.spinner("Running ITS…"):
             model, df, figs, metrics = quick_its(out_s, film_s, intervention.isoformat())
 
-        # ---- Headline summary ----
-        sig_level = 0.05
-        p_post     = float(model.pvalues.get("post", 1.0))
-        p_timepost = float(model.pvalues.get("time_post", 1.0))
-        flag = (lambda p: "✅" if p < sig_level else "⚠️")
+            # ---- Headline summary ----
+            sig_level = 0.05
+            p_post     = float(model.pvalues.get("post", 1.0))
+            p_timepost = float(model.pvalues.get("time_post", 1.0))
+            flag = (lambda p: "✅" if p < sig_level else "⚠️")
 
-        st.subheader("Results (plain English)")
-        st.write(
-            f"{flag(p_post)} Around **{intervention}**, the outcome shifted by "
-            f"**{metrics['level_change']:.0f}** "
-            f"({metrics['level_change_pct_of_pre']:.1f}% of the pre-release average; "
-            f"95% CI {metrics['level_ci_lo']:.0f}…{metrics['level_ci_hi']:.0f})."
-        )
-        st.write(
-            f"{flag(p_timepost)} After that date, the weekly trend changed by "
-            f"**{metrics['slope_change_per_week']:.3f}** per week "
-            f"(95% CI {metrics['slope_ci_lo']:.3f}…{metrics['slope_ci_hi']:.3f})."
-        )
-        st.caption("Green check = statistically significant at p<0.05; warning = not significant.")
+            st.subheader("Results (plain English)")
+            st.write(
+                f"{flag(p_post)} Around **{intervention}**, the outcome shifted by "
+                f"**{metrics['level_change']:.0f}** "
+                f"({metrics['level_change_pct_of_pre']:.1f}% of the pre-release average; "
+                f"95% CI {metrics['level_ci_lo']:.0f}…{metrics['level_ci_hi']:.0f})."
+            )
+            st.write(
+                f"{flag(p_timepost)} After that date, the weekly trend changed by "
+                f"**{metrics['slope_change_per_week']:.3f}** per week "
+                f"(95% CI {metrics['slope_ci_lo']:.3f}…{metrics['slope_ci_hi']:.3f})."
+            )
+            st.caption("Green check = statistically significant at p<0.05; warning = not significant.")
 
-        # ---- Core charts ----
-        st.pyplot(figs[0]); st.pyplot(figs[1])
+            # ---- Core charts ----
+            st.pyplot(figs[0]); st.pyplot(figs[1])
 
-        # ---- Layman-friendly narrative ("What these charts mean") ----
-        with st.expander("What these charts mean (plain language)", expanded=True):
-            # Build counterfactual + excess for narrative
+            # ---- Layman-friendly narrative ----
+            with st.expander("What these charts mean (plain language)", expanded=True):
+                design = sm.add_constant(df[["time","post","time_post","film_lag1"]])
+                pred    = model.predict(design)
+                design_cf = design.copy()
+                design_cf["post"] = 0
+                design_cf["time_post"] = 0
+                pred_cf = model.predict(design_cf)
+
+                after = df.index >= metrics["t0_monday"]
+                excess = (df["outcome"] - pred_cf).where(after, 0.0)
+                cum_excess = float(excess.cumsum().iloc[-1])
+                weeks_positive = int((excess > 0).sum())
+
+                peak_val = float(df["outcome"].max())
+                peak_when = df["outcome"].idxmax().date()
+
+                # Half-life (best-effort)
+                half_life_text = "n/a"
+                try:
+                    from scipy.optimize import curve_fit
+                    def _exp_decay(t, A, k, c): return A*np.exp(-k*t) + c
+                    pos = after & (excess > 0)
+                    if pos.sum() >= 6:
+                        y = excess[pos].values
+                        t = np.arange(len(y))
+                        (A, k, c), _ = curve_fit(_exp_decay, t, y, p0=[max(y), 0.1, 0.0], maxfev=20000)
+                        hl = (np.log(2)/k) if k > 0 else np.nan
+                        if np.isfinite(hl):
+                            half_life_text = f"{hl:.1f} weeks"
+                except Exception:
+                    pass
+
+                # Optional: top regions (only for Trends)
+                regions_text = ""
+                if "Google" in data_source and 'show_regions' in locals() and show_regions:
+                    try:
+                        reg = cached_regions(film_input.split(",")[0].strip(), geo=geo, timeframe=timeframe)
+                        qcol = film_input.split(",")[0].strip()
+                        top3 = reg.sort_values(qcol, ascending=False).head(3)["region"].tolist()
+                        if top3:
+                            regions_text = f" Top regions: {', '.join(top3)}."
+                    except Exception:
+                        pass
+
+                sig = lambda p: "statistically significant" if p < 0.05 else "not statistically significant"
+                readable = (
+                    f"**Headline** — Around **{intervention}**, attention to **{outcome_input}** changed.\n\n"
+                    f"**First chart:** Blue = weekly interest; dashed line = release; orange = fitted model.\n\n"
+                    f"**Immediate jump:** **{metrics['level_change']:.0f}** "
+                    f"({metrics['level_change_pct_of_pre']:.1f}% of pre-release), {sig(p_post)}.\n\n"
+                    f"**Trend change:** **{metrics['slope_change_per_week']:.3f}** per week, {sig(p_timepost)}.\n\n"
+                    f"**Cumulative lift:** ~**{cum_excess:,.0f}** units over **{weeks_positive} weeks** vs the baseline path.\n\n"
+                    f"**Peak:** **{peak_val:,.0f}** on **{peak_when}**. **Half-life:** {half_life_text}.\n\n"
+                    f"**Data source:** {'Google Trends (0–100 index)' if 'Google' in data_source else 'Wikipedia pageviews (counts)'}."
+                    f"{regions_text}\n\n*Correlations only; other events may also drive interest.*"
+                )
+                st.markdown(readable)
+                st.download_button("⬇️ Download summary (.txt)", readable.encode("utf-8"), file_name="readable_summary.txt")
+
+            # ---- Coeff table ----
+            coef = (model.params.to_frame("coef")
+                    .join(model.bse.to_frame("stderr"))
+                    .join(model.pvalues.to_frame("pval")))
+            st.subheader("Model coefficients")
+            st.dataframe(coef.style.format({"coef": "{:.4f}", "stderr": "{:.4f}", "pval": "{:.4f}"}))
+
+            # ---- Downloads (CSV/ZIP/PPT) ----
+            merged = df.copy()
+            merged.index.name = "week_start"
+            st.download_button("⬇️ Coefficients (CSV)", coef.to_csv().encode(), file_name="its_coefficients.csv")
+            st.download_button("⬇️ Weekly series (CSV)", merged.to_csv().encode(), file_name="weekly_series.csv")
+
+            # ZIP bundle (figures + CSVs + summary)
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                for i, fig in enumerate(figs, start=1):
+                    fbuf = io.BytesIO()
+                    fig.savefig(fbuf, format="png", dpi=200, bbox_inches="tight")
+                    z.writestr(f"figure_{i}.png", fbuf.getvalue())
+                z.writestr("its_coefficients.csv", coef.to_csv().encode())
+                z.writestr("weekly_series.csv", merged.to_csv().encode())
+                summary = (
+                    f"Film: {film_input}\nOutcome: {outcome_input}\n"
+                    f"Intervention: {intervention}\n\n"
+                    f"Immediate level change: {metrics['level_change']:.2f} "
+                    f"({metrics['level_change_pct_of_pre']:.1f}% of pre)\n"
+                    f"Slope change per week: {metrics['slope_change_per_week']:.3f}\n"
+                    f"95% CIs — level: {metrics['level_ci_lo']:.2f}..{metrics['level_ci_hi']:.2f}, "
+                    f"slope: {metrics['slope_ci_lo']:.3f}..{metrics['slope_ci_hi']:.3f}\n"
+                    f"Source: {'Google Trends' if 'Google' in data_source else 'Wikipedia'}"
+                ).encode()
+                z.writestr("summary.txt", summary)
+            st.download_button("⬇️ Report bundle (ZIP)", buf.getvalue(), file_name="its_report_bundle.zip")
+
+            # PowerPoint
+            st.download_button("⬇️ PowerPoint (.pptx)", make_ppt(film_input, outcome_input, intervention, figs, metrics),
+                               file_name="its_report.pptx")
+
+            # ---- Performance Visuals (with captions) ----
+            st.subheader("Performance visuals")
+
+            # Rebuild design matrices for predictions
             design = sm.add_constant(df[["time","post","time_post","film_lag1"]])
             pred    = model.predict(design)
             design_cf = design.copy()
             design_cf["post"] = 0
             design_cf["time_post"] = 0
-            pred_cf = model.predict(design_cf)  # counterfactual (no jump, no slope change)
+            pred_cf = model.predict(design_cf)  # counterfactual (no intervention)
 
-            after = df.index >= metrics["t0_monday"]
-            excess = (df["outcome"] - pred_cf).where(after, 0.0)
-            cum_excess = float(excess.cumsum().iloc[-1])
-            weeks_positive = int((excess > 0).sum())
+            after_mask = df.index >= metrics["t0_monday"]
+            excess = (df["outcome"] - pred_cf).where(after_mask, 0.0)
 
-            peak_val = float(df["outcome"].max())
-            peak_when = df["outcome"].idxmax().date()
-            level_pct = metrics["level_change_pct_of_pre"]
+            # 1) Actual vs Counterfactual (shaded excess)
+            fig = plt.figure(figsize=(10,4))
+            plt.plot(df.index, df["outcome"], label="Actual outcome")
+            plt.plot(df.index, pred_cf, label="Counterfactual (no intervention)")
+            plt.fill_between(df.index[after_mask], pred_cf[after_mask], df["outcome"][after_mask], alpha=0.25)
+            plt.axvline(metrics["t0_monday"], linestyle="--", label="Intervention")
+            plt.title("Actual vs Counterfactual"); plt.legend(); plt.tight_layout()
+            st.pyplot(fig)
+            st.caption(
+                "Blue is what happened; orange is a modelled ‘no-release’ world. "
+                "Shaded area after the dashed line is **extra attention** attributed to the release."
+            )
 
-            # Half-life (best-effort)
-            half_life_text = "n/a"
-            try:
-                from scipy.optimize import curve_fit
-                def _exp_decay(t, A, k, c): return A*np.exp(-k*t) + c
-                pos = after & (excess > 0)
-                if pos.sum() >= 6:
-                    y = excess[pos].values
-                    t = np.arange(len(y))
-                    (A, k, c), _ = curve_fit(_exp_decay, t, y, p0=[max(y), 0.1, 0.0], maxfev=20000)
-                    hl = (np.log(2)/k) if k > 0 else np.nan
-                    if np.isfinite(hl):
-                        half_life_text = f"{hl:.1f} weeks"
-            except Exception:
-                pass
+            # 2) Weekly excess bars
+            fig = plt.figure(figsize=(10,3))
+            plt.bar(df.index[after_mask], excess[after_mask])
+            plt.axvline(metrics["t0_monday"], linestyle="--")
+            plt.title("Weekly Excess vs Counterfactual"); plt.tight_layout()
+            st.pyplot(fig)
+            st.caption("Each bar shows how far above (or below) baseline the outcome was that week after release.")
 
-            # Optional: top regions (only for Trends)
-            regions_text = ""
-            if show_regions and "Google" in data_source:
+            # 3) Cumulative excess
+            cum_excess = excess.cumsum()
+            fig = plt.figure(figsize=(10,3))
+            plt.plot(df.index, cum_excess)
+            plt.axvline(metrics["t0_monday"], linestyle="--")
+            plt.title("Cumulative Excess Interest"); plt.tight_layout()
+            st.pyplot(fig)
+            st.caption("Running total of extra attention vs the counterfactual. Steeper climb = faster gains.")
+
+            # 4) Event-study (±26 weeks)
+            weeks_from = ((df.index - metrics["t0_monday"]).days // 7).astype(int)
+            window = weeks_from.between(-26, 26)
+            es = df.loc[window, ["outcome"]].copy()
+            es["k"] = weeks_from[window]
+            es_avg = es.groupby("k")["outcome"].mean()
+            fig = plt.figure(figsize=(10,3))
+            plt.plot(es_avg.index, es_avg.values)
+            plt.axvline(0, linestyle="--")
+            plt.title("Event-time average (weeks relative to intervention)")
+            plt.xlabel("Weeks from intervention"); plt.tight_layout()
+            st.pyplot(fig)
+            st.caption("Lead-up (left) and after-effect (right) centered on the selected week (0).")
+
+            # 5) Decay fit & half-life (best-effort)
+            from scipy.optimize import curve_fit
+            def _exp_decay(t, A, k, c):  # A*e^(-k t)+c
+                return A * np.exp(-k * t) + c
+
+            pos = after_mask & (excess > 0)
+            if pos.sum() >= 6:
+                y = excess[pos].values
+                t = np.arange(len(y))
                 try:
+                    A0, k0, c0 = max(y), 0.1, 0.0
+                    (A, k, c), _ = curve_fit(_exp_decay, t, y, p0=[A0, k0, c0], maxfev=20000)
+                    hl = (np.log(2)/k) if k > 0 else np.nan
+                    fig = plt.figure(figsize=(10,3))
+                    plt.plot(df.index[pos], y, label="Observed excess")
+                    plt.plot(df.index[pos], _exp_decay(t, A, k, c), label=f"Decay fit (half-life ≈ {hl:.1f} wks)")
+                    plt.axvline(metrics["t0_monday"], linestyle="--")
+                    plt.title("Excess decay after intervention"); plt.legend(); plt.tight_layout()
+                    st.pyplot(fig)
+                    st.caption("How fast the lift fades. Half-life ≈ weeks for the lift to drop by half.")
+                except Exception as _e:
+                    st.info(f"Decay fit skipped: {_e}")
+                    st.caption("We couldn’t fit a decay curve this time (not enough stable positive weeks).")
+
+            # 6) Placebo check (random pre-dates vs observed effect)
+            def _fit_at(date_monday):
+                d = df.copy()
+                d["post"] = (d.index >= date_monday).astype(int)
+                d["time_post"] = d["time"] * d["post"]
+                Xp = sm.add_constant(d[["time","post","time_post","film_lag1"]])
+                return sm.OLS(d["outcome"], Xp).fit(cov_type="HAC", cov_kwds={"maxlags":4})
+
+            pre_idx = df.index[df.index < metrics["t0_monday"]]
+            pre_idx = pre_idx[8:]  # buffer
+            n_placebo = int(min(50, max(0, len(pre_idx)-8)))
+            placebo_effects = []
+            if n_placebo >= 10:
+                rng = np.random.default_rng(42)
+                picks = np.sort(rng.choice(pre_idx, size=n_placebo, replace=False))
+                for d0 in picks:
+                    res = _fit_at(d0)
+                    if "post" in res.params:
+                        placebo_effects.append(float(res.params["post"]))
+                if placebo_effects:
+                    fig = plt.figure(figsize=(10,3))
+                    plt.hist(placebo_effects, bins=20, alpha=0.8)
+                    plt.axvline(metrics["level_change"], color="red", linestyle="--", label="Observed level change")
+                    plt.title("Placebo distribution (pre-period dates)"); plt.legend(); plt.tight_layout()
+                    st.pyplot(fig)
+                    st.caption(
+                        "Grey bars = fake pre-dates. Red line = your jump. If it’s far to the right, "
+                        "your effect is unlikely to be just random timing."
+                    )
+
+            # 7) Interest by region (Trends only)
+            if "Google" in data_source and show_regions:
+                try:
+                    st.subheader("Interest by region (Top 15)")
                     reg = cached_regions(film_input.split(",")[0].strip(), geo=geo, timeframe=timeframe)
                     qcol = film_input.split(",")[0].strip()
-                    top3 = reg.sort_values(qcol, ascending=False).head(3)["region"].tolist()
-                    if top3:
-                        regions_text = f" Top regions: {', '.join(top3)}."
-                except Exception:
-                    pass
+                    top = reg.sort_values(qcol, ascending=False).head(15)
+                    fig = plt.figure(figsize=(10,5))
+                    plt.barh(top["region"][::-1], top[qcol][::-1])
+                    plt.title("Where interest is highest"); plt.tight_layout()
+                    st.pyplot(fig)
+                    st.caption("Locations with the strongest search interest for the project (Google Trends).")
+                except Exception as e:
+                    st.info(f"Region breakdown unavailable: {e}")
 
-            sig = lambda p: "statistically significant" if p < 0.05 else "not statistically significant"
-            readable = (
-                f"**Headline** — Around **{intervention}**, attention to **{outcome_input}** changed.\n\n"
-                f"**What the first chart shows:** The solid blue line is weekly interest in *{outcome_input}*. "
-                f"The dashed vertical line marks the release window you chose. The orange line is the model’s fitted "
-                f"path, letting us estimate a jump at the date and whether the slope changed afterward.\n\n"
-                f"**Immediate jump:** The model estimates an instant change of **{metrics['level_change']:.0f}** "
-                f"({level_pct:.1f}% of the pre-release average), {sig(p_post)}.\n\n"
-                f"**Change in trend:** After the date, the average week-to-week change is **{metrics['slope_change_per_week']:.3f}** "
-                f"per week, {sig(p_timepost)}.\n\n"
-                f"**Counterfactual comparison:** Using the model’s “no-release” path as a baseline, the film generated a "
-                f"total **cumulative excess** of about **{cum_excess:,.0f}** units of attention, over **{weeks_positive} weeks**.\n\n"
-                f"**Peak popularity:** The highest observed week reached **{peak_val:,.0f}** on **{peak_when}**.\n\n"
-                f"**Decay speed:** From the excess pattern, the rough **half-life** of the post-release bump is **{half_life_text}** "
-                f"(how long it takes for the lift to fall by half).\n\n"
-                f"**Film interest chart:** The second chart shows weekly interest in the film itself, which often peaks near "
-                f"release and then fades.\n\n"
-                f"**Data source:** {'Google Trends (0–100 index)' if 'Google' in data_source else 'Wikipedia pageviews (raw counts)'}."
-                f"{regions_text}"
-                "\n\n*Notes:* results are correlational; interest can be influenced by other events (news cycles, marketing, platform placement, etc.)."
-            )
-            st.markdown(readable)
-            st.download_button("⬇️ Download summary (.txt)", readable.encode("utf-8"), file_name="readable_summary.txt")
-
-        # ---- Coeff table ----
-        coef = (model.params.to_frame("coef")
-                .join(model.bse.to_frame("stderr"))
-                .join(model.pvalues.to_frame("pval")))
-        st.subheader("Model coefficients")
-        st.dataframe(coef.style.format({"coef": "{:.4f}", "stderr": "{:.4f}", "pval": "{:.4f}"}))
-
-        # ---- Downloads (CSV/ZIP/PPT) ----
-        merged = df.copy()
-        merged.index.name = "week_start"
-        csv_coef = coef.to_csv().encode()
-        csv_data = merged.to_csv().encode()
-        st.download_button("⬇️ Download coefficients (CSV)", csv_coef, file_name="its_coefficients.csv")
-        st.download_button("⬇️ Download weekly series (CSV)", csv_data, file_name="weekly_series.csv")
-
-        # ZIP bundle (figures + CSVs + summary)
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-            for i, fig in enumerate(figs, start=1):
-                fbuf = io.BytesIO()
-                fig.savefig(fbuf, format="png", dpi=200, bbox_inches="tight")
-                z.writestr(f"figure_{i}.png", fbuf.getvalue())
-            z.writestr("its_coefficients.csv", csv_coef)
-            z.writestr("weekly_series.csv", csv_data)
-            summary = (
-                f"Film: {film_input}\nOutcome: {outcome_input}\n"
-                f"Intervention: {intervention}\n\n"
-                f"Immediate level change: {metrics['level_change']:.2f} "
-                f"({metrics['level_change_pct_of_pre']:.1f}% of pre)\n"
-                f"Slope change per week: {metrics['slope_change_per_week']:.3f}\n"
-                f"95% CIs — level: {metrics['level_ci_lo']:.2f}..{metrics['level_ci_hi']:.2f}, "
-                f"slope: {metrics['slope_ci_lo']:.3f}..{metrics['slope_ci_hi']:.3f}\n"
-                f"Source: {'Google Trends' if 'Google' in data_source else 'Wikipedia'}"
-            ).encode()
-            z.writestr("summary.txt", summary)
-        st.download_button("⬇️ Download report bundle (ZIP)", buf.getvalue(), file_name="its_report_bundle.zip")
-
-        # PowerPoint
-        def _make_ppt():
-            return make_ppt(film_input, outcome_input, intervention, figs, metrics)
-        st.download_button("⬇️ Download PowerPoint (.pptx)", _make_ppt(), file_name="its_report.pptx")
-
-        # ---- Performance Visuals Pack (with friendly descriptions) ----
-        st.subheader("Performance visuals")
-
-        # Rebuild design matrices for predictions
-        design = sm.add_constant(df[["time","post","time_post","film_lag1"]])
-        pred    = model.predict(design)
-        design_cf = design.copy()
-        design_cf["post"] = 0
-        design_cf["time_post"] = 0
-        pred_cf = model.predict(design_cf)  # counterfactual (no intervention)
-
-        after_mask = df.index >= metrics["t0_monday"]
-        excess = (df["outcome"] - pred_cf).where(after_mask, 0.0)
-
-        # 1) Actual vs Counterfactual (shaded excess)
-        fig = plt.figure(figsize=(10,4))
-        plt.plot(df.index, df["outcome"], label="Actual outcome")
-        plt.plot(df.index, pred_cf, label="Counterfactual (no intervention)")
-        plt.fill_between(df.index[after_mask], pred_cf[after_mask], df["outcome"][after_mask], alpha=0.25)
-        plt.axvline(metrics["t0_monday"], linestyle="--", label="Intervention")
-        plt.title("Actual vs Counterfactual"); plt.legend(); plt.tight_layout()
-        st.pyplot(fig)
-        st.caption(
-            "This compares what happened (blue) to a modelled ‘no-release’ world (orange). "
-            "The shaded area after the dashed line is the **extra attention** attributed to the release window. "
-            "Bigger shaded area ⇒ stronger overall impact."
-        )
-
-        # 2) Weekly excess bars
-        fig = plt.figure(figsize=(10,3))
-        plt.bar(df.index[after_mask], excess[after_mask])
-        plt.axvline(metrics["t0_monday"], linestyle="--")
-        plt.title("Weekly Excess vs Counterfactual"); plt.tight_layout()
-        st.pyplot(fig)
-        st.caption(
-            "Each bar shows **how much above (or below) baseline** the outcome was that week after release. "
-            "Tall early bars usually mean a spike; negative bars mean weeks below the modelled baseline."
-        )
-
-        # 3) Cumulative excess
-        cum_excess = excess.cumsum()
-        fig = plt.figure(figsize=(10,3))
-        plt.plot(df.index, cum_excess)
-        plt.axvline(metrics["t0_monday"], linestyle="--")
-        plt.title("Cumulative Excess Interest"); plt.tight_layout()
-        st.pyplot(fig)
-        st.caption(
-            "Running total of the extra attention vs the counterfactual. "
-            "A steep climb means impact is building fast; a flat line means the effect has faded. "
-            "The final value is the **total lift** over the period."
-        )
-
-        # 4) Event-study (±26 weeks)
-        weeks_from = ((df.index - metrics["t0_monday"]).days // 7).astype(int)
-        window = weeks_from.between(-26, 26)
-        es = df.loc[window, ["outcome"]].copy()
-        es["k"] = weeks_from[window]
-        es_avg = es.groupby("k")["outcome"].mean()
-        fig = plt.figure(figsize=(10,3))
-        plt.plot(es_avg.index, es_avg.values)
-        plt.axvline(0, linestyle="--")
-        plt.title("Event-time average (weeks relative to intervention)")
-        plt.xlabel("Weeks from intervention"); plt.tight_layout()
-        st.pyplot(fig)
-        st.caption(
-            "Zoomed view centred on release week (0). "
-            "Left side shows the **lead-up** pattern; right side shows the **after-effect** week by week."
-        )
-
-        # 5) Decay fit & half-life (best-effort)
-        from scipy.optimize import curve_fit
-        def _exp_decay(t, A, k, c):  # A*e^(-k t)+c
-            return A * np.exp(-k * t) + c
-
-        pos = after_mask & (excess > 0)
-        if pos.sum() >= 6:
-            y = excess[pos].values
-            t = np.arange(len(y))
-            try:
-                A0, k0, c0 = max(y), 0.1, 0.0
-                (A, k, c), _ = curve_fit(_exp_decay, t, y, p0=[A0, k0, c0], maxfev=20000)
-                hl = (np.log(2)/k) if k > 0 else np.nan
-                fig = plt.figure(figsize=(10,3))
-                plt.plot(df.index[pos], y, label="Observed excess")
-                plt.plot(df.index[pos], _exp_decay(t, A, k, c), label=f"Decay fit (half-life ≈ {hl:.1f} wks)")
-                plt.axvline(metrics["t0_monday"], linestyle="--")
-                plt.title("Excess decay after intervention"); plt.legend(); plt.tight_layout()
-                st.pyplot(fig)
-                st.caption(
-                    "How quickly the lift fades. The curve estimates a simple **exponential decay**. "
-                    "The **half-life** is roughly how many weeks it takes for the lift to drop by half."
-                )
-            except Exception as _e:
-                st.info(f"Decay fit skipped: {_e}")
-                st.caption("We couldn’t fit a decay curve this time (not enough stable positive weeks).")
-
-        # 6) Placebo check (random pre-dates vs observed effect)
-        def _fit_at(date_monday):
-            d = df.copy()
-            d["post"] = (d.index >= date_monday).astype(int)
-            d["time_post"] = d["time"] * d["post"]
-            Xp = sm.add_constant(d[["time","post","time_post","film_lag1"]])
-            return sm.OLS(d["outcome"], Xp).fit(cov_type="HAC", cov_kwds={"maxlags":4})
-
-        pre_idx = df.index[df.index < metrics["t0_monday"]]
-        pre_idx = pre_idx[8:]  # buffer
-        n_placebo = int(min(50, max(0, len(pre_idx)-8)))
-        placebo_effects = []
-        if n_placebo >= 10:
-            rng = np.random.default_rng(42)
-            picks = np.sort(rng.choice(pre_idx, size=n_placebo, replace=False))
-            for d0 in picks:
-                res = _fit_at(d0)
-                if "post" in res.params:
-                    placebo_effects.append(float(res.params["post"]))
-            if placebo_effects:
-                fig = plt.figure(figsize=(10,3))
-                plt.hist(placebo_effects, bins=20, alpha=0.8)
-                plt.axvline(metrics["level_change"], color="red", linestyle="--", label="Observed level change")
-                plt.title("Placebo distribution (pre-period dates)"); plt.legend(); plt.tight_layout()
-                st.pyplot(fig)
-                st.caption(
-                    "Sanity check: the grey bars show ‘fake’ release dates picked in the **pre-period**. "
-                    "The red line is your real jump. If it’s far to the right of most bars, your effect is "
-                    "unlikely to be just random timing."
-                )
-
-        # 7) Interest by region (Trends only)
-        if show_regions and "Google" in data_source:
-            try:
-                st.subheader("Interest by region (Top 15)")
-                reg = cached_regions(film_input.split(",")[0].strip(), geo=geo, timeframe=timeframe)
-                qcol = film_input.split(",")[0].strip()
-                top = reg.sort_values(qcol, ascending=False).head(15)
-                fig = plt.figure(figsize=(10,5))
-                plt.barh(top["region"][::-1], top[qcol][::-1])
-                plt.title("Where interest is highest"); plt.tight_layout()
-                st.pyplot(fig)
-                st.caption(
-                    "Locations with the strongest search interest for the film (Google Trends). "
-                    "Useful for understanding **where** attention came from."
-                )
-            except Exception as e:
-                st.info(f"Region breakdown unavailable: {e}")
-
-        # ---- Optional: compare multiple dates ----
-        if multi_dates.strip():
-            dates = [d.strip() for d in multi_dates.split(",") if d.strip()]
-            try:
-                table = compare_interventions(dates, out_s, film_s)
-                st.subheader("Date comparison")
-                st.dataframe(table.style.format({
-                    "level_change":"{:.0f}", "level_%_pre":"{:.1f}%", "level_p":"{:.3f}",
-                    "slope_change":"{:.2f}", "slope_p":"{:.3f}"
-                }))
-                st.download_button("⬇️ Download comparison (CSV)", table.to_csv(index=False).encode(),
-                                   file_name="its_date_comparison.csv")
-            except Exception as e:
-                st.warning(f"Could not run date comparison: {e}")
+            # ---- Optional: compare multiple dates ----
+            if multi_dates.strip():
+                dates = [d.strip() for d in multi_dates.split(",") if d.strip()]
+                try:
+                    table = compare_interventions(dates, out_s, film_s)
+                    st.subheader("Date comparison")
+                    st.dataframe(table.style.format({
+                        "level_change":"{:.0f}", "level_%_pre":"{:.1f}%", "level_p":"{:.3f}",
+                        "slope_change":"{:.2f}", "slope_p":"{:.3f}"
+                    }))
+                    st.download_button("⬇️ Download comparison (CSV)", table.to_csv(index=False).encode(),
+                                       file_name="its_date_comparison.csv")
+                except Exception as e:
+                    st.warning(f"Could not run date comparison: {e}")
 
     except Exception as e:
-        st.error(f"Error: {e}")
+        with right:
+            st.error(f"Error: {e}")
         st.stop()
 
 # --------------------------- Batch mode ---------------------------
-if batch_file is not None:
-    st.subheader("Batch results")
-    try:
-        bdf = pd.read_csv(batch_file)
-        rows = []
-        for _, r in bdf.iterrows():
-            src = str(r.get("source","trends") or "trends").lower()
-            geo_r = str(r.get("geo",""))
-            try:
-                if "trend" in src:
-                    f = cached_trends([r["film"]], geo=geo_r, timeframe="today 5-y").rename("film_interest")
-                    o = cached_trends([r["outcome"]], geo=geo_r, timeframe="today 5-y").rename("outcome")
-                else:
-                    f = cached_wiki(r["film"], "20190101", dt.date.today().strftime("%Y%m%d")).rename("film_interest")
-                    o = cached_wiki(r["outcome"], "20190101", dt.date.today().strftime("%Y%m%d")).rename("outcome")
-                model, dfX, _, m = quick_its(o, f, str(r["intervention"]))
-                rows.append({
-                    "film": r["film"], "outcome": r["outcome"], "intervention": r["intervention"],
-                    "source": src, "geo": geo_r,
-                    "level_change": m["level_change"], "level_%_pre": m["level_change_pct_of_pre"],
-                    "level_p": float(model.pvalues.get("post", np.nan)),
-                    "slope_change": m["slope_change_per_week"], "slope_p": float(model.pvalues.get("time_post", np.nan)),
-                })
-            except Exception as e:
-                rows.append({
-                    "film": r.get("film"), "outcome": r.get("outcome"),
-                    "intervention": r.get("intervention"), "source": src, "geo": geo_r,
-                    "error": str(e)
-                })
-        out = pd.DataFrame(rows)
-        st.dataframe(out)
-        st.download_button("⬇️ Download batch results (CSV)", out.to_csv(index=False).encode(),
-                           file_name="batch_its_results.csv")
-    except Exception as e:
-        st.error(f"Batch error: {e}")
+if 'batch_file' in locals() and batch_file is not None:
+    with right:
+        st.subheader("Batch results")
+        try:
+            bdf = pd.read_csv(batch_file)
+            rows = []
+            for _, r in bdf.iterrows():
+                src = str(r.get("source","trends") or "trends").lower()
+                geo_r = str(r.get("geo",""))
+                try:
+                    if "trend" in src:
+                        f = cached_trends([r["film"]], geo=geo_r, timeframe="today 5-y").rename("film_interest")
+                        o = cached_trends([r["outcome"]], geo=geo_r, timeframe="today 5-y").rename("outcome")
+                    else:
+                        f = cached_wiki(r["film"], "20190101", dt.date.today().strftime("%Y%m%d")).rename("film_interest")
+                        o = cached_wiki(r["outcome"], "20190101", dt.date.today().strftime("%Y%m%d")).rename("outcome")
+                    model, dfX, _, m = quick_its(o, f, str(r["intervention"]))
+                    rows.append({
+                        "film": r["film"], "outcome": r["outcome"], "intervention": r["intervention"],
+                        "source": src, "geo": geo_r,
+                        "level_change": m["level_change"], "level_%_pre": m["level_change_pct_of_pre"],
+                        "level_p": float(model.pvalues.get("post", np.nan)),
+                        "slope_change": m["slope_change_per_week"], "slope_p": float(model.pvalues.get("time_post", np.nan)),
+                    })
+                except Exception as e:
+                    rows.append({
+                        "film": r.get("film"), "outcome": r.get("outcome"),
+                        "intervention": r.get("intervention"), "source": src, "geo": geo_r,
+                        "error": str(e)
+                    })
+            out = pd.DataFrame(rows)
+            st.dataframe(out)
+            st.download_button("⬇️ Download batch results (CSV)", out.to_csv(index=False).encode(),
+                               file_name="batch_its_results.csv")
+        except Exception as e:
+            st.error(f"Batch error: {e}")
+          
