@@ -304,16 +304,17 @@ def trends_pair(film_qs, outcome_qs, geo, timeframe):
 with st.container():
     st.markdown('<div class="center-card">', unsafe_allow_html=True)
     with st.form("center_form"):
-        st.subheader("Enter your project")
-        film_input = st.text_input(
-            "Project title",
-            value="Eating Our Way to Extinction",
-            placeholder="e.g., Don’t Look Up",
-        )
-        intervention = st.date_input(
-            "Date of release",
-            value=dt.date(2021, 9, 30),
-            help="Approximate is OK. We align to Mondays internally."
+    # Removed the subheader and added the example right in the label
+    film_input = st.text_input(
+        "Project title (e.g., Eating Our Way to Extinction)",
+        value="",  # leave blank so the example acts as guidance, not data
+        placeholder="Type a film/series title…",
+    )
+    intervention = st.date_input(
+        "Date of release",
+        value=dt.date(2021, 9, 30),
+        help="Approximate is OK. We align to Mondays internally."
+    )
         )
 
         with st.expander("Advanced options", expanded=False):
