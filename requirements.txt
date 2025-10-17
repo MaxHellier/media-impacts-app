@@ -1,14 +1,13 @@
 streamlit==1.37.1
-pandas==1.5.3
-numpy==1.23.5
-scipy==1.10.1
+pandas==2.2.2
+numpy==1.26.4
+scipy==1.11.4
 statsmodels==0.14.2
 matplotlib==3.8.4
 
-# Google Trends
+# Data sources
 pytrends==4.9.2
 requests==2.32.3
-urllib3>=2.0.0
 
 # Report export
 python-pptx==0.6.23
