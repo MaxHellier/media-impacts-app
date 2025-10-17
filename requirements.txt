@@ -1,15 +1,12 @@
 streamlit==1.37.1
+pytrends==4.9.2
+urllib3==1.26.19
 pandas==2.2.2
 numpy==1.26.4
 scipy==1.11.4
-statsmodels==0.14.2
+statsmodels==0.14.1
 matplotlib==3.8.4
-
-# Data sources
-pytrends==4.9.2
+seaborn==0.13.2
 requests==2.32.3
-
-# Report export
-python-pptx==0.6.23
-Pillow==10.4.0
-lxml==5.3.0
+python-dateutil==2.9.0.post0
+pytz==2024.1
