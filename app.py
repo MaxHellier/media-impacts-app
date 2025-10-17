@@ -1,9 +1,9 @@
 # app.py — Media Impacts: Quick ITS (all-in-one web app)
 # Features:
 # - Data sources: Google Trends (0–100 index) or Wikipedia pageviews (counts)
-# - Auto-fallback from Trends -> Wikipedia if rate-limited
+# - Smart fallback: if Trends fails OR a Wikipedia title isn't exact, we auto-resolve by search
 # - Caching for speed
-# - Plain-English summary with significance flags
+# - Plain-English headline + a detailed layman narrative ("What these charts mean")
 # - Core charts + Performance Visuals Pack (counterfactual, excess, cumulative, event study, decay half-life, placebo check)
 # - Date comparison table (e.g., theatrical vs streaming vs YouTube)
 # - Interest-by-region (Trends)
@@ -41,41 +41,66 @@ def fetch_trends_weekly(queries: List[str], geo: str, timeframe: str = "today 5-
     )
 
     wait = 5
-    for i in range(tries):
+    for _ in range(tries):
         try:
             py.build_payload(queries, timeframe=timeframe, geo=geo)
             df = py.interest_over_time()
             if df.empty:
                 raise RuntimeError("Google Trends returned no data; try a different GEO or timeframe.")
-            if "isPartial" in df.columns: df = df.drop(columns=["isPartial"])
+            if "isPartial" in df.columns:
+                df = df.drop(columns=["isPartial"])
             s = df[queries].mean(axis=1).resample("W-MON").mean()
             return s.rename("value")
         except Exception as e:
             msg = str(e)
             if isinstance(e, pex.TooManyRequestsError) or "429" in msg:
                 st.info(f"Rate limited (429). Retrying in {wait}s…")
-                time.sleep(wait); wait = min(wait*2, 60); continue
+                time.sleep(wait)
+                wait = min(wait * 2, 60)
+                continue
             if "code 400" in msg and timeframe != "today 5-y":
-                timeframe = "today 5-y"  # safer default
+                timeframe = "today 5-y"
                 continue
             raise
 
-def wiki_weekly_pageviews(title: str, start: str, end: str, lang: str = "en") -> pd.Series:
-    """Wikipedia weekly pageviews (sum of daily), W-MON index, with polite UA."""
+def wiki_weekly_pageviews(title_or_query: str, start: str, end: str, lang: str = "en") -> pd.Series:
+    """
+    Wikipedia weekly pageviews (sum of daily), W-MON index, with polite UA.
+    Smart: if the exact page doesn't exist (404), it searches and uses the top result.
+    """
     import requests
     from urllib.parse import quote
 
     session = requests.Session()
     session.headers.update({"User-Agent": "media-impacts-app/0.1 (contact: you@example.com)"})
 
-    # Validate page exists
-    chk = session.get(f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{quote(title, safe='')}", timeout=15)
-    chk.raise_for_status()
 
+    def _summary_exists(title: str) -> bool:
+        r = session.get(f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{quote(title, safe='')}", timeout=15)
+        if r.status_code == 404:
+            return False
+        r.raise_for_status()
+        return True
+
+    title = title_or_query.strip()
+    if not _summary_exists(title):
+        # Resolve by search if exact page not found
+        sr = session.get(
+            f"https://{lang}.wikipedia.org/w/api.php",
+            params={"action": "query", "list": "search", "srsearch": title_or_query, "format": "json"},
+            timeout=20,
+        )
+        sr.raise_for_status()
+        hits = sr.json().get("query", {}).get("search", [])
+        if not hits:
+            raise RuntimeError(f"No Wikipedia page found for “{title_or_query}”. Try a different term.")
+        title = hits[0]["title"]  # top match
+
+    # Fetch daily views and aggregate weekly
     r = session.get(
         f"https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/"
         f"{lang}.wikipedia/all-access/user/{quote(title, safe='')}/daily/{start}/{end}",
-        timeout=30
+        timeout=30,
     )
     r.raise_for_status()
     items = r.json().get("items", [])
@@ -213,22 +238,23 @@ def cached_regions(query, geo, timeframe):
 with st.sidebar:
     st.header("Inputs")
 
+    # Default to Wikipedia on embedded/public pages to avoid rate limits
     data_source = st.radio(
         "Data source",
         ["Google Trends (index 0–100)", "Wikipedia pageviews (counts)"],
         help="Trends can rate-limit; Wikipedia is instant.",
-        index=0
+        index=1
     )
     auto_fallback = st.checkbox("Auto-fallback to Wikipedia if Trends fails", value=True)
 
     film_input = st.text_input(
         "Film (title or Trends terms)",
         value="Eating Our Way to Extinction",
-        help="Trends: comma-separated variants (max 5). Wikipedia: exact page title."
+        help="Trends: comma-separated variants (max 5). Wikipedia: any title or phrase; we'll auto-resolve."
     )
     outcome_input = st.text_input(
         "Outcome (Trends term or Wikipedia page)",
-        value="plant-based food" if "Google" in data_source else "Plant-based diet"
+        value="Plant-based diet" if "Wikipedia" in data_source else "plant-based food"
     )
 
     col1, col2 = st.columns(2)
@@ -279,7 +305,7 @@ if run:
         with st.spinner("Running ITS…"):
             model, df, figs, metrics = quick_its(out_s, film_s, intervention.isoformat())
 
-        # ---- Plain-English summary ----
+        # ---- Headline summary ----
         sig_level = 0.05
         p_post     = float(model.pvalues.get("post", 1.0))
         p_timepost = float(model.pvalues.get("time_post", 1.0))
@@ -301,83 +327,78 @@ if run:
 
         # ---- Core charts ----
         st.pyplot(figs[0]); st.pyplot(figs[1])
-      # ---- Layman-friendly narrative ("What the charts mean") ----
-with st.expander("What these charts mean (plain language)", expanded=True):
-    # Rebuild predictions so we can compute counterfactual + excess (same as in visuals pack)
-    design = sm.add_constant(df[["time","post","time_post","film_lag1"]])
-    pred    = model.predict(design)
-    design_cf = design.copy()
-    design_cf["post"] = 0
-    design_cf["time_post"] = 0
-    pred_cf = model.predict(design_cf)  # counterfactual (no jump, no slope change)
 
-    after = df.index >= metrics["t0_monday"]
-    excess = (df["outcome"] - pred_cf).where(after, 0.0)
-    cum_excess = float(excess.cumsum().iloc[-1])
-    weeks_positive = int((excess > 0).sum())
+        # ---- Layman-friendly narrative ("What these charts mean") ----
+        with st.expander("What these charts mean (plain language)", expanded=True):
+            # Build counterfactual + excess for narrative
+            design = sm.add_constant(df[["time","post","time_post","film_lag1"]])
+            pred    = model.predict(design)
+            design_cf = design.copy()
+            design_cf["post"] = 0
+            design_cf["time_post"] = 0
+            pred_cf = model.predict(design_cf)  # counterfactual (no jump, no slope change)
 
-    # Peak and baseline
-    peak_val = float(df["outcome"].max())
-    peak_when = df["outcome"].idxmax().date()
-    pre_mean = metrics["pre_mean"]
-    level_pct = metrics["level_change_pct_of_pre"]
+            after = df.index >= metrics["t0_monday"]
+            excess = (df["outcome"] - pred_cf).where(after, 0.0)
+            cum_excess = float(excess.cumsum().iloc[-1])
+            weeks_positive = int((excess > 0).sum())
 
-    # Try to estimate a simple decay half-life (only if we have enough positive excess)
-    half_life_text = "n/a"
-    try:
-        from scipy.optimize import curve_fit
-        def _exp_decay(t, A, k, c): return A*np.exp(-k*t) + c
-        pos = after & (excess > 0)
-        if pos.sum() >= 6:
-            y = excess[pos].values
-            t = np.arange(len(y))
-            (A, k, c), _ = curve_fit(_exp_decay, t, y, p0=[max(y), 0.1, 0.0], maxfev=20000)
-            hl = (np.log(2)/k) if k > 0 else np.nan
-            if np.isfinite(hl):
-                half_life_text = f"{hl:.1f} weeks"
-    except Exception:
-        pass
+            peak_val = float(df["outcome"].max())
+            peak_when = df["outcome"].idxmax().date()
+            pre_mean = metrics["pre_mean"]
+            level_pct = metrics["level_change_pct_of_pre"]
 
-    # Optional: top regions if you're using Google Trends and toggled 'Show interest by region'
-    regions_text = ""
-    if show_regions and "Google" in data_source:
-        try:
-            reg = cached_regions(film_input.split(",")[0].strip(), geo=geo, timeframe=timeframe)
-            qcol = film_input.split(",")[0].strip()
-            top3 = reg.sort_values(qcol, ascending=False).head(3)["region"].tolist()
-            if top3:
-                regions_text = f" Top regions: {', '.join(top3)}."
-        except Exception:
-            pass
+            # Half-life (best-effort)
+            half_life_text = "n/a"
+            try:
+                from scipy.optimize import curve_fit
+                def _exp_decay(t, A, k, c): return A*np.exp(-k*t) + c
+                pos = after & (excess > 0)
+                if pos.sum() >= 6:
+                    y = excess[pos].values
+                    t = np.arange(len(y))
+                    (A, k, c), _ = curve_fit(_exp_decay, t, y, p0=[max(y), 0.1, 0.0], maxfev=20000)
+                    hl = (np.log(2)/k) if k > 0 else np.nan
+                    if np.isfinite(hl):
+                        half_life_text = f"{hl:.1f} weeks"
+            except Exception:
+                pass
 
-    # Build the narrative
-    p_post     = float(model.pvalues.get("post", 1.0))
-    p_timepost = float(model.pvalues.get("time_post", 1.0))
-    sig = lambda p: "statistically significant" if p < 0.05 else "not statistically significant"
+            # Optional: top regions (only for Trends)
+            regions_text = ""
+            if show_regions and "Google" in data_source:
+                try:
+                    reg = cached_regions(film_input.split(",")[0].strip(), geo=geo, timeframe=timeframe)
+                    qcol = film_input.split(",")[0].strip()
+                    top3 = reg.sort_values(qcol, ascending=False).head(3)["region"].tolist()
+                    if top3:
+                        regions_text = f" Top regions: {', '.join(top3)}."
+                except Exception:
+                    pass
 
-    readable = (
-        f"**Headline** — Around **{intervention}**, attention to **{outcome_input}** changed.\n\n"
-        f"**What the first chart shows:** The solid blue line is weekly interest in *{outcome_input}*. "
-        f"The dashed vertical line marks the release window you chose. The orange line is the model’s fitted "
-        f"path, letting us estimate a jump at the date and whether the slope changed afterward.\n\n"
-        f"**Immediate jump:** The model estimates an instant change of **{metrics['level_change']:.0f}** "
-        f"({level_pct:.1f}% of the pre-release average), {sig(p_post)}.\n\n"
-        f"**Change in trend:** After the date, the average week-to-week change is **{metrics['slope_change_per_week']:.3f}** "
-        f"per week, {sig(p_timepost)}.\n\n"
-        f"**Counterfactual comparison:** Using the model’s “no-release” path as a baseline, the film generated a "
-        f"total **cumulative excess** of about **{cum_excess:,.0f}** units of attention, spread over **{weeks_positive} weeks**.\n\n"
-        f"**Peak popularity:** The highest observed week reached **{peak_val:,.0f}** on **{peak_when}**.\n\n"
-        f"**Decay speed:** From the excess pattern, the rough **half-life** of the post-release bump is **{half_life_text}** "
-        f"(how long it takes for the lift to fall by half). \n\n"
-        f"**Film interest chart:** The second chart shows weekly interest in the film itself, which often peaks near "
-        f"release and then fades.\n\n"
-        f"**Data source:** {'Google Trends (0–100 index)' if 'Google' in data_source else 'Wikipedia pageviews (raw counts)'}."
-        f"{regions_text}"
-        "\n\n*Notes:* results are correlational; interest can be influenced by other events (news cycles, marketing, platform placement, etc.)."
-    )
-
-    st.markdown(readable)
-    st.download_button("⬇️ Download summary (.txt)", readable.encode("utf-8"), file_name="readable_summary.txt")
+            sig = lambda p: "statistically significant" if p < 0.05 else "not statistically significant"
+            readable = (
+                f"**Headline** — Around **{intervention}**, attention to **{outcome_input}** changed.\n\n"
+                f"**What the first chart shows:** The solid blue line is weekly interest in *{outcome_input}*. "
+                f"The dashed vertical line marks the release window you chose. The orange line is the model’s fitted "
+                f"path, letting us estimate a jump at the date and whether the slope changed afterward.\n\n"
+                f"**Immediate jump:** The model estimates an instant change of **{metrics['level_change']:.0f}** "
+                f"({level_pct:.1f}% of the pre-release average), {sig(p_post)}.\n\n"
+                f"**Change in trend:** After the date, the average week-to-week change is **{metrics['slope_change_per_week']:.3f}** "
+                f"per week, {sig(p_timepost)}.\n\n"
+                f"**Counterfactual comparison:** Using the model’s “no-release” path as a baseline, the film generated a "
+                f"total **cumulative excess** of about **{cum_excess:,.0f}** units of attention, over **{weeks_positive} weeks**.\n\n"
+                f"**Peak popularity:** The highest observed week reached **{peak_val:,.0f}** on **{peak_when}**.\n\n"
+                f"**Decay speed:** From the excess pattern, the rough **half-life** of the post-release bump is **{half_life_text}** "
+                f"(how long it takes for the lift to fall by half).\n\n"
+                f"**Film interest chart:** The second chart shows weekly interest in the film itself, which often peaks near "
+                f"release and then fades.\n\n"
+                f"**Data source:** {'Google Trends (0–100 index)' if 'Google' in data_source else 'Wikipedia pageviews (raw counts)'}."
+                f"{regions_text}"
+                "\n\n*Notes:* results are correlational; interest can be influenced by other events (news cycles, marketing, platform placement, etc.)."
+            )
+            st.markdown(readable)
+            st.download_button("⬇️ Download summary (.txt)", readable.encode("utf-8"), file_name="readable_summary.txt")
 
         # ---- Coeff table ----
         coef = (model.params.to_frame("coef")
@@ -470,7 +491,7 @@ with st.expander("What these charts mean (plain language)", expanded=True):
         plt.xlabel("Weeks from intervention"); plt.tight_layout()
         st.pyplot(fig)
 
-        # 5) Decay fit & half-life (fit simple exponential to positive excess after event)
+        # 5) Decay fit & half-life
         from scipy.optimize import curve_fit
         def _exp_decay(t, A, k, c):  # A*e^(-k t)+c
             return A * np.exp(-k * t) + c
