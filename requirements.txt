@@ -1,9 +1,16 @@
-streamlit
-pytrends
-pandas
-numpy
-scipy
-statsmodels
-matplotlib
-requests
-python-pptx
+streamlit==1.37.1
+pandas==1.5.3
+numpy==1.23.5
+scipy==1.10.1
+statsmodels==0.14.2
+matplotlib==3.8.4
+
+# Google Trends
+pytrends==4.9.2
+requests==2.32.3
+urllib3>=2.0.0
+
+# Report export
+python-pptx==0.6.23
+Pillow==10.4.0
+lxml==5.3.0
