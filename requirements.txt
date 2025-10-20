@@ -7,3 +7,4 @@ matplotlib==3.9.2
 requests==2.32.3
 pytrends==4.9.2
 urllib3==1.26.19
+openai==1.51.0
